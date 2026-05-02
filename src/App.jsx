@@ -187,7 +187,7 @@ const DomJankControl = ({ isCrashing, mousePos }) => {
 
 		frameId = requestAnimationFrame(animate);
 		return () => cancelAnimationFrame(frameId);
-	}, [count]);
+	}, [count, isCrashing]);
 
 	return (
 		<div className="relative w-full h-full overflow-hidden bg-black border-r border-red-900/50">
@@ -366,7 +366,7 @@ const WebGLD2VControl = ({ count, mousePos }) => {
 			gl.deleteVertexArray(vaoB);
 			gl.deleteProgram(program);
 		};
-	}, [count]);
+	}, [count, mousePos]);
 
 	return (
 		<div className="relative w-full h-full bg-[#0d0d0d]">
