@@ -1,7 +1,17 @@
 /* eslint-disable no-unused-vars */
-//@ts-nocheck
-import { useState, useEffect, useRef } from "react";
-import { AlertTriangle, Activity, CheckCircle, Search, Zap } from "lucide-react";
+// @ts-nocheck
+import React, { useState, useEffect, useRef, useMemo } from "react";
+import {
+	AlertTriangle,
+	Activity,
+	CheckCircle,
+	Search,
+	Zap,
+	PauseCircle,
+	PlayCircle,
+	ChevronDown,
+	ChevronUp,
+} from "lucide-react";
 
 // --- WebGL2 Raw Shaders for D2V Architecture ---
 const vsSource = `#version 300 es
@@ -112,12 +122,41 @@ void main() {
 }
 `;
 
+// --- COMPONENT: TEXT HIGHLIGHTER ---
+const HighlightText = ({ text, search }) => {
+	if (!search) return <>{text}</>;
+	const parts = text.split(new RegExp(`(${search})`, "gi"));
+	return (
+		<>
+			{parts.map((part, i) =>
+				part.toLowerCase() === search.toLowerCase() ? (
+					<mark key={i} className="bg-cyan-500 text-black px-1 rounded-sm">
+						{part}
+					</mark>
+				) : (
+					part
+				),
+			)}
+		</>
+	);
+};
+
 // --- COMPONENT: JANK SIMULATOR (LEFT SIDE) ---
-const DomJankControl = ({ isCrashing, mousePos }) => {
+const DomJankControl = ({ isCrashing, mousePos, onCrashToggle }) => {
 	const containerRef = useRef(null);
 	const elementsRef = useRef([]);
 	const [metrics, setMetrics] = useState({ fps: 0, ms: 0, cpu: 0 });
-	const count = isCrashing ? 100000 : 5000;
+	const [isPaused, setIsPaused] = useState(false);
+	const isPausedRef = useRef(false);
+
+	// 600 is snappy (60 FPS) even on older CPUs. 1400 will heavily jank the main thread but leave enough room to click the Halt button.
+	const count = isCrashing ? 1400 : 600;
+
+	// Sync the pause state to a ref so we can read it inside the animation loop
+	// without triggering a full destruction/rebuild of the 10,000 DOM elements.
+	useEffect(() => {
+		isPausedRef.current = isPaused;
+	}, [isPaused]);
 
 	useEffect(() => {
 		// Generate initial traditional Array of Structures
@@ -128,15 +167,19 @@ const DomJankControl = ({ isCrashing, mousePos }) => {
 			vy: (Math.random() - 0.5) * 5,
 		}));
 
-		// Create DOM elements if needed
+		// Create DOM elements (Optimized with DocumentFragment to prevent initial freeze)
 		if (containerRef.current) {
 			containerRef.current.innerHTML = "";
+			const fragment = document.createDocumentFragment();
+
 			elementsRef.current = particles.map(() => {
 				const el = document.createElement("div");
 				el.className = "absolute w-1 h-1 bg-red-500/60 rounded-full will-change-transform";
-				containerRef.current.appendChild(el);
+				fragment.appendChild(el);
 				return el;
 			});
+
+			containerRef.current.appendChild(fragment);
 		}
 
 		let frameId;
@@ -154,20 +197,23 @@ const DomJankControl = ({ isCrashing, mousePos }) => {
 
 			const startCpu = performance.now();
 
-			// Standard Javascript Object Array iteration (AoS) causing DOM thrashing
-			for (let i = 0; i < count; i++) {
-				let p = particles[i];
+			// Read from the ref so we don't need isPaused in the dependency array
+			if (!isPausedRef.current) {
+				// Standard Javascript Object Array iteration (AoS) causing DOM thrashing
+				for (let i = 0; i < count; i++) {
+					let p = particles[i];
 
-				// Very basic physics
-				p.x += p.vx;
-				p.y += p.vy;
+					// Very basic physics
+					p.x += p.vx;
+					p.y += p.vy;
 
-				if (p.x < 0 || p.x > width) p.vx *= -1;
-				if (p.y < 0 || p.y > height) p.vy *= -1;
+					if (p.x < 0 || p.x > width) p.vx *= -1;
+					if (p.y < 0 || p.y > height) p.vy *= -1;
 
-				// String parsing & Layout thrashing
-				if (elementsRef.current[i]) {
-					elementsRef.current[i].style.transform = `translate(${p.x}px, ${p.y}px)`;
+					// String parsing & Layout thrashing
+					if (elementsRef.current[i]) {
+						elementsRef.current[i].style.transform = `translate(${p.x}px, ${p.y}px)`;
+					}
 				}
 			}
 
@@ -176,8 +222,12 @@ const DomJankControl = ({ isCrashing, mousePos }) => {
 			frames++;
 			if (now - lastFpsUpdate >= 500) {
 				const fps = Math.round((frames * 1000) / (now - lastFpsUpdate));
-				const estimatedCpu = Math.min(100, Math.round((cpuTime / 16.66) * 100)); // Simulated CPU load based on frame budget
-				setMetrics({ fps, ms: cpuTime.toFixed(1), cpu: isCrashing ? 100 : estimatedCpu });
+				const estimatedCpu = isPausedRef.current ? 0 : Math.min(100, Math.round((cpuTime / 16.66) * 100));
+				setMetrics({
+					fps,
+					ms: cpuTime.toFixed(1),
+					cpu: isCrashing && !isPausedRef.current ? 100 : estimatedCpu,
+				});
 				frames = 0;
 				lastFpsUpdate = now;
 			}
@@ -187,24 +237,25 @@ const DomJankControl = ({ isCrashing, mousePos }) => {
 
 		frameId = requestAnimationFrame(animate);
 		return () => cancelAnimationFrame(frameId);
-	}, [count, isCrashing]);
+	}, [count]); // Removed isPaused and isCrashing so they don't rebuild the DOM
 
 	return (
 		<div className="relative w-full h-full overflow-hidden bg-black border-r border-red-900/50">
 			<div ref={containerRef} className="absolute inset-0 z-0"></div>
 
-			<div className="absolute top-6 left-6 z-10 p-4 bg-black/80 border border-red-500/30 backdrop-blur-sm rounded-lg max-w-sm">
+			<div className="absolute top-24 left-6 z-10 p-4 bg-black/80 border border-red-500/30 backdrop-blur-sm rounded-lg max-w-sm">
 				<h2 className="text-red-400 font-bold text-xl flex items-center mb-2">
 					<Activity className="w-5 h-5 mr-2" />
 					The Jank Control
 				</h2>
 				<p className="text-gray-400 text-sm mb-4">
-					Traditional Array of Structures (AoS) + DOM string parsing. The UI framework fatigue reality.
+					Traditional DOM framework updates. Notice how struggling on this side affects the{" "}
+					<strong>entire</strong> browser tab.
 				</p>
 
 				<div className="grid grid-cols-2 gap-4 mb-4">
 					<div className="bg-red-950/30 p-2 rounded border border-red-900/50">
-						<div className="text-xs text-red-500/70 uppercase">Particles</div>
+						<div className="text-xs text-red-500/70 uppercase">Nodes</div>
 						<div className="text-xl font-mono text-red-400">{count.toLocaleString()}</div>
 					</div>
 					<div className="bg-red-950/30 p-2 rounded border border-red-900/50">
@@ -212,7 +263,7 @@ const DomJankControl = ({ isCrashing, mousePos }) => {
 						<div className="text-xl font-mono text-red-400">{metrics.fps}</div>
 					</div>
 					<div className="bg-red-950/30 p-2 rounded border border-red-900/50">
-						<div className="text-xs text-red-500/70 uppercase">Main Thread Time</div>
+						<div className="text-xs text-red-500/70 uppercase">Thread Load</div>
 						<div className="text-xl font-mono text-red-400">{metrics.ms}ms</div>
 					</div>
 					<div className="bg-red-950/30 p-2 rounded border border-red-900/50">
@@ -223,6 +274,32 @@ const DomJankControl = ({ isCrashing, mousePos }) => {
 						</div>
 					</div>
 				</div>
+
+				<div className="flex gap-2 mt-4">
+					<button
+						onClick={() => setIsPaused(!isPaused)}
+						className={`flex-1 py-2 px-3 rounded flex items-center justify-center text-sm font-bold transition-colors ${isPaused ? "bg-green-600 hover:bg-green-500 text-white" : "bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-600"}`}>
+						{isPaused ? <PlayCircle className="w-4 h-4 mr-2" /> : <PauseCircle className="w-4 h-4 mr-2" />}
+						{isPaused ? "Resume DOM" : "Halt DOM Thread"}
+					</button>
+				</div>
+			</div>
+
+			{/* Action Overlay */}
+			<div className="absolute bottom-10 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center">
+				<button
+					onClick={onCrashToggle}
+					className={`font-bold py-3 px-8 rounded border shadow-[0_0_20px_rgba(220,38,38,0.4)] transition-all transform hover:scale-105 ${isCrashing ? "bg-gray-800 border-gray-600 text-gray-400" : "bg-red-600 hover:bg-red-500 text-white border-red-400"}`}>
+					{isCrashing ? "Reset Simulation" : "Overload DOM (1400)"}
+				</button>
+
+				{isCrashing && !isPaused && (
+					<div className="mt-4 bg-red-900/80 border border-red-500 text-white px-4 py-2 rounded animate-pulse font-mono text-sm text-center">
+						MAIN THREAD CHOKING.
+						<br />
+						Click 'Halt DOM Thread' above to recover.
+					</div>
+				)}
 			</div>
 		</div>
 	);
@@ -372,7 +449,7 @@ const WebGLD2VControl = ({ count, mousePos }) => {
 		<div className="relative w-full h-full bg-[#0d0d0d]">
 			<canvas ref={canvasRef} className="w-full h-full block" />
 
-			<div className="absolute top-6 right-6 z-10 p-4 bg-black/80 border border-cyan-500/30 backdrop-blur-sm rounded-lg max-w-sm">
+			<div className="absolute top-24 right-6 z-10 p-4 bg-black/80 border border-cyan-500/30 backdrop-blur-sm rounded-lg max-w-sm">
 				<h2 className="text-cyan-400 font-bold text-xl flex items-center mb-2">
 					<Zap className="w-5 h-5 mr-2" />
 					The D2V Architecture
@@ -391,13 +468,13 @@ const WebGLD2VControl = ({ count, mousePos }) => {
 						<div className="text-xl font-mono text-cyan-400">{metrics.fps}</div>
 					</div>
 					<div className="bg-cyan-950/30 p-2 rounded border border-cyan-900/50">
-						<div className="text-xs text-cyan-500/70 uppercase">Main Thread Time</div>
+						<div className="text-xs text-cyan-500/70 uppercase">Thread Load</div>
 						<div className="text-xl font-mono text-cyan-400">{metrics.ms}ms</div>
 					</div>
 					<div className="bg-cyan-950/30 p-2 rounded border border-cyan-900/50">
 						<div className="text-xs text-cyan-500/70 uppercase">CPU Stress</div>
 						<div className="text-xl font-mono text-cyan-400 flex items-center">
-							~0% <CheckCircle className="w-4 h-4 ml-2 text-green-500" />
+							0% <CheckCircle className="w-4 h-4 ml-2 text-green-500" />
 						</div>
 					</div>
 				</div>
@@ -412,6 +489,8 @@ export default function App() {
 	const [d2vCount, setD2vCount] = useState(100000);
 	const mousePos = useRef({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
 	const [searchText, setSearchText] = useState("");
+	const [showInstructions, setShowInstructions] = useState(false);
+	const [hasClickedStart, setHasClickedStart] = useState(false);
 
 	useEffect(() => {
 		const handleMouseMove = e => {
@@ -420,13 +499,6 @@ export default function App() {
 		window.addEventListener("mousemove", handleMouseMove);
 		return () => window.removeEventListener("mousemove", handleMouseMove);
 	}, []);
-
-	const handleCrash = () => {
-		const confirm = window.confirm(
-			"WARNING: This will attempt to load 100,000 DOM elements and calculate their positions in the main thread. Your browser tab will likely freeze. Proceed?",
-		);
-		if (confirm) setIsCrashing(true);
-	};
 
 	return (
 		<div className="w-screen h-screen flex flex-col font-sans overflow-hidden bg-black text-white selection:bg-cyan-500/30">
@@ -452,27 +524,75 @@ export default function App() {
 				</div>
 			</header>
 
+			{/* Instructions Dropdown */}
+			<div className="absolute top-24 left-[420px] z-40 flex flex-col items-start pointer-events-auto">
+				<button
+					onClick={() => {
+						setShowInstructions(!showInstructions);
+						setHasClickedStart(true);
+					}}
+					className={`bg-black/95 border border-cyan-500 text-cyan-400 font-bold px-5 py-2 rounded-t-lg flex items-center hover:bg-cyan-950 transition-colors tracking-wider ${!hasClickedStart ? "animate-pulse shadow-[0_0_25px_rgba(6,182,212,0.6)]" : "shadow-[0_0_15px_rgba(6,182,212,0.2)]"}`}>
+					START HERE{" "}
+					{showInstructions ? (
+						<ChevronUp className="w-5 h-5 ml-2" />
+					) : (
+						<ChevronDown className="w-5 h-5 ml-2" />
+					)}
+				</button>
+
+				{showInstructions && (
+					<div className="bg-black/95 border border-cyan-500/50 backdrop-blur-xl p-6 rounded-b-xl rounded-tr-xl shadow-2xl w-[400px]">
+						<h3 className="text-lg font-bold text-white mb-2">The "Technical Violence" Lab</h3>
+						<p className="text-gray-400 mb-4 text-[13px] leading-relaxed">
+							Follow these steps to experience the limit of UI frameworks.
+							<br />
+							<br />
+							<strong className="text-cyan-400 font-medium">Crucial Observation:</strong> Notice that when
+							the left side chokes, the framerate drops on the right side too. Because standard UI
+							frameworks force everything to share the exact same single-threaded Event Loop, the frame
+							rate is always bound by the slowest component. Even with a powerful GPU rendering millions
+							of particles effortlessly, a struggling CPU calculating DOM elements will drag the entire
+							tab down to its lower FPS.
+						</p>
+						<ol className="list-decimal list-outside pl-8 pr-4 py-4 space-y-2.5 text-gray-300 font-mono text-[11px] bg-gray-950/80 rounded border border-gray-800 shadow-inner leading-relaxed">
+							<li>
+								Click <span className="text-red-400 font-bold">Overload DOM</span> button on the left.
+							</li>
+							<li>
+								Wait ~10-20 seconds for DOM to stop{" "}
+								<span className="text-red-500">("Main Thread Choking" alert)</span>.
+							</li>
+							<li>
+								Click <span className="text-gray-400 font-bold">Halt DOM Thread</span>.
+							</li>
+							<li>
+								Click <span className="text-cyan-400 font-bold">1 MILLION</span> button on right side.
+							</li>
+							<li>
+								Interact with right side <span className="text-gray-500">(move mouse around)</span>.
+							</li>
+							<li>Search for "n" in Search bar.</li>
+							<li>
+								Click <span className="text-gray-400 font-bold">Reset Simulation</span> button on left
+								side.
+							</li>
+							<li>
+								Click <span className="text-green-400 font-bold">Resume DOM</span> button on left side.
+							</li>
+						</ol>
+					</div>
+				)}
+			</div>
+
 			{/* Split Screen Lab */}
 			<div className="flex-1 flex w-full">
 				{/* Left Side: The Problem */}
 				<div className="w-1/2 relative group">
-					<DomJankControl isCrashing={isCrashing} mousePos={mousePos} />
-
-					{/* Action Overlay */}
-					<div className="absolute bottom-10 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center">
-						{!isCrashing && (
-							<button
-								onClick={handleCrash}
-								className="bg-red-600 hover:bg-red-500 text-white font-bold py-3 px-8 rounded border border-red-400 shadow-[0_0_20px_rgba(220,38,38,0.4)] transition-all transform hover:scale-105">
-								Crash the Browser (100k DOM)
-							</button>
-						)}
-						{isCrashing && (
-							<div className="bg-red-900/80 border border-red-500 text-white px-6 py-3 rounded animate-pulse font-mono">
-								System Overload. Thread Locked.
-							</div>
-						)}
-					</div>
+					<DomJankControl
+						isCrashing={isCrashing}
+						mousePos={mousePos}
+						onCrashToggle={() => setIsCrashing(!isCrashing)}
+					/>
 				</div>
 
 				{/* Right Side: The Solution */}
@@ -480,15 +600,21 @@ export default function App() {
 					<WebGLD2VControl count={d2vCount} mousePos={mousePos} />
 
 					{/* "Semantic Kill" Target Overlay */}
-					<div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none z-20">
+					<div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-20">
 						<div
-							className={`transition-all duration-300 ${searchText && "Direct-to-Vertex".toLowerCase().includes(searchText.toLowerCase()) ? "bg-cyan-500/20 border-cyan-400 scale-110" : "bg-black/40 border-gray-700"} border backdrop-blur-md p-6 rounded-xl text-center shadow-2xl`}>
-							<h3 className="text-xl font-light text-cyan-50 mb-2">I am standard HTML.</h3>
-							<p className="text-sm text-cyan-200/70 max-w-xs">
-								Floating above a simulation of {d2vCount.toLocaleString()} particles. Fully indexable,
-								highlightable, and readable.
+							className={`transition-all duration-300 ${searchText ? "bg-cyan-950/40 border-cyan-400/60 shadow-[0_0_30px_rgba(6,182,212,0.2)] scale-105" : "bg-black/40 border-gray-700"} border backdrop-blur-md p-6 rounded-xl text-center shadow-2xl`}>
+							<h3 className="text-xl font-light text-cyan-50 mb-2">
+								<HighlightText text="I am standard HTML." search={searchText} />
+							</h3>
+							<p className="text-sm text-cyan-200/70 max-w-xs leading-relaxed">
+								<HighlightText
+									text={`Floating above a simulation of ${d2vCount.toLocaleString()} particles. Fully indexable, highlightable, and readable.`}
+									search={searchText}
+								/>
 							</p>
-							<p className="mt-4 font-mono text-xs text-cyan-400">Direct-to-Vertex</p>
+							<p className="mt-4 font-mono text-xs text-cyan-400">
+								<HighlightText text="Direct-to-Vertex" search={searchText} />
+							</p>
 						</div>
 					</div>
 
